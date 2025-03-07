@@ -295,26 +295,193 @@ Give their full name and the teams that they were managing when they won the awa
 
 SELECT *
 FROM awardsmanagers
-WHERE awardid = 'TSN Manager of the Year'
+WHERE awardid = 'TSN Manager of the Year' AND (playerid = 'coxbo01' OR playerid = 'larusto01')
 
 
 WITH multi_league_winner AS (
 	SELECT playerid
 	FROM awardsmanagers
 	WHERE awardid = 'TSN Manager of the Year'
-	GROUP BY playerid, yearid
+		AND (lgid = 'NL' OR lgid = 'AL')
+	GROUP BY playerid
 	HAVING COUNT(DISTINCT lgid) = 2
-)
+),
 all_instances_mlw AS(
-	SELECT * 
+	SELECT am.playerid, am.awardid, am.yearid, am.lgid
 	FROM awardsmanagers AS am
 	RIGHT JOIN multi_league_winner AS mlw
 	ON mlw.playerid = am.playerid
+),
+no_names AS(
+	SELECT m.playerid, m.yearid, m.teamid, aim.lgid
+	FROM managers AS m
+	RIGHT JOIN all_instances_mlw AS aim
+	ON m.playerid = aim.playerid AND m.yearid = aim.yearid
 )
-SELECT m.playerid, m.yearid, m.teamid, m.
-FROM managers AS m
-RIGHT JOIN all_instances_mlw AS aim
-ON m.playerid = aim.playerid AND m.yearid = mlw.yearid
+SELECT p.namefirst || ' ' || p.namelast AS fullname, nn.yearid, nn.teamid AS team, nn.lgid AS league
+FROM people AS p
+RIGHT JOIN no_names AS nn
+ON nn.playerid = p.playerid
+ORDER BY fullname;
+
+-- The two managers to win TSN manager of the year in the american and national league were Jim leyland and Davey Johnson.
+
+
+/*
+#7
+
+Which pitcher was the least efficient in 2016 in terms of salary / strikeouts? Only consider pitchers who started at least 10 games (across all teams). 
+Note that pitchers often play for more than one team in a season, so be sure that you are counting all stats for each player.
+
+*/
+
+
+WITH q1 AS(
+	SELECT playerid, SUM(gs) AS games_started, SUM(so) AS total_strikeouts_2016 
+	FROM pitching
+	WHERE yearid = 2016
+	GROUP BY playerid
+	HAVING SUM(gs) >= 10
+),
+new_salaries AS(
+	SELECT *
+	FROM salaries
+	WHERE yearid = 2016
+),
+no_names AS (
+	SELECT q1.playerid, q1.total_strikeouts_2016, s.salary, (s.salary / q1.total_strikeouts_2016) AS price_per_strikeout
+	FROM q1 
+	INNER JOIN new_salaries AS s 
+	ON s.playerid = q1.playerid 
+	ORDER BY price_per_strikeout DESC
+)
+SELECT p.namefirst || ' ' || p.namelast AS fullname, nn.total_strikeouts_2016, nn.salary, nn.price_per_strikeout
+FROM no_names AS nn
+LEFT JOIN people AS p
+ON p.playerid = nn.playerid
+ORDER BY price_per_strikeout DESC;
+
+-- The least efficient player for stikeouts to salary was Matt Cain, costing around 289,351 for every strikeout he threw. 
+-- (And if I misunderstood and I should have done "ipouts" rather than so it was still Matt Cain)
+
+
+/*
+
+#8
+Find all players who have had at least 3000 career hits. Report those players' names, total number of hits, and the year 
+they were inducted into the hall of fame (If they were not inducted into the hall of fame, put a null in that column.) 
+Note that a player being inducted into the hall of fame is indicated by a 'Y' in the inducted column of the halloffame table.
+
+*/
+
+
+WITH pnames AS(
+	SELECT playerid, SUM(h) AS total_career_hits   -- I think its only h and we only have to group by playerid to cover all years and potential teams.
+	FROM batting
+	GROUP BY playerid
+	HAVING sum(h) >= 3000
+),
+fullnames AS(
+	SELECT pn.playerid, pn.total_career_hits, p.namefirst || ' ' || p.namelast AS fullname
+	FROM pnames AS pn
+	LEFT JOIN people AS p
+	ON p.playerid = pn.playerid
+)
+SELECT fn.fullname, fn.total_career_hits, hof.yearid AS year_inducted_hof
+FROM fullnames AS fn
+LEFT JOIN halloffame AS hof
+ON fn.playerid = hof.playerid;
+
+
+/*
+
+#9
+
+Find all players who had at least 1,000 hits for two different teams. Report those players' full names.
+
+
+*/ 
+
+
+WITH teams_and_hits AS(
+	SELECT playerid, teamid, SUM(h) AS hits
+	FROM batting
+	GROUP BY playerid, teamid
+	HAVING SUM(h) >= 1000
+),
+nonames AS (
+	SELECT playerid, COUNT(playerid) AS number_teams_1000hits
+	FROM teams_and_hits
+	GROUP BY playerid
+	HAVING COUNT(playerid) >= 2
+)
+SELECT p.namefirst || ' ' || p.namelast AS fullname
+FROM nonames AS nn
+LEFT JOIN people AS p
+ON p.playerid = nn.playerid
+
+
+/*
+
+#10
+
+Find all players who hit their career highest number of home runs in 2016. Consider only players who have played in the league 
+for at least 10 years, and who hit at least one home run in 2016. Report the players' first and last names and the number of home runs they hit in 2016.
+
+*/
+
+
+WITH players_ten_years AS(
+	SELECT playerid
+	FROM batting
+	GROUP BY playerid
+	HAVING COUNT(DISTINCT(yearid)) >= 10	
+),
+players_2016 AS(
+	SELECT playerid, hr, yearid
+	FROM batting
+	WHERE yearid = 2016 AND hr >=1
+	 
+),
+elig_players AS(
+	SELECT p2016.playerid
+	FROM players_2016 AS p2016
+	INNER JOIN players_ten_years AS pty
+	ON pty.playerid = p2016.playerid
+),
+yearly_homerun_counts AS (
+	SELECT b.playerid, b.yearid, SUM(hr) AS yearly_hr_count
+	FROM elig_players AS ep
+	LEFT JOIN batting AS b
+	ON b.playerid = ep.playerid
+	GROUP BY b.playerid, b.yearid
+),
+carrer_high_hr AS (
+	SELECT yhc.playerid, MAX(yhc.yearly_hr_count)
+	FROM yearly_homerun_counts AS yhc
+	GROUP BY playerid
+),
+almost_final_df AS (
+	SELECT yhc.*, chhr.max AS hr_year_high,
+		CASE WHEN (yhc.yearly_hr_count = chhr.max) AND (yhc.yearid = 2016) THEN 'Y'
+		ELSE 'N'
+		END AS peak_in_2016
+	FROM carrer_high_hr AS chhr
+	LEFT JOIN yearly_homerun_counts AS yhc
+	ON yhc.playerid = chhr.playerid
+)
+SELECT p.namefirst || ' ' || p.namelast AS fullname, afd.yearly_hr_count AS hr_count_2016
+FROM almost_final_df AS afd
+LEFT JOIN people AS p
+ON p.playerid = afd.playerid
+WHERE afd.peak_in_2016 = 'Y'
+ORDER BY hr_count_2016 DESC
+
+
+
+
+
+
 
 
 
